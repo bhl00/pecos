@@ -386,3 +386,35 @@ class XLinearModel(pecos.BaseClass):
         else:
             raise TypeError("type(pred_kwargs) is not supported")
         return Y_pred
+
+    def predict_select_outputs(
+        self,
+        X,
+        select_outputs,
+        pred_params=None,
+        **kwargs,
+    ):
+        """Predict select outputs on given input data
+        Args:
+            X (csr_matrix(float32) or ndarray(float32)): instance feature matrix to predict on
+            select_outputs (csr_matrix): instance label matrix to predict from
+            pred_params (XLinearModel.PredParams, optional): instance of XLinearModel.PredParams
+            kwargs:
+                post_processor (str, optional):  override the post_processor specified in the model
+                    Default None to disable overriding
+                threads (int, optional): the number of threads to use for training.
+                    Defaults to -1 to use all
+        Returns:
+            Y_pred (csr_matrix): prediction matrix
+        """
+        if pred_params is None:
+            Y_pred = self.model.predict_select_outputs(
+                X, select_outputs, pred_params=None, **kwargs
+            )
+        elif isinstance(pred_params, self.PredParams):
+            Y_pred = self.model.predict_select_outputs(
+                X, select_outputs, pred_params=pred_params.hlm_args, **kwargs
+            )
+        else:
+            raise TypeError("type(pred_kwargs) is not supported")
+        return Y_pred
