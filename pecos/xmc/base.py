@@ -818,6 +818,61 @@ class MLModel(pecos.BaseClass):
 
         return pred_alloc.get()
 
+    def predict_select_outputs(
+        self,
+        X,
+        csr_codes,
+        prev_pred_csr=None,
+        pred_params=None,
+        **kwargs,
+    ):
+        """Predict on given input data
+
+        Args:
+            X (csr_matrix or ndarray): instance feature matrix to predict on
+            csr_codes (csr_matrix): the select outputs to predict
+            prev_pred_csr (csr_matrix): the prediction from previous matchers (nr_inst, nr_codes).
+                Default None to ignore
+            pred_params (MLModel.PredParams, optional): instance of MLModel.PredParams.
+                Default None to use the pred_params used in model training.
+            kwargs: overriding prediction parameters for backward compatibility
+                post_processor (str, optional):  override the post_processor in pred_params
+                    Default None to disable overriding
+                threads (int, optional): override the number of threads to use for training in pred_params
+                    Default to -1 to disable overriding
+
+        Returns:
+            pred_csr (csr_matrix): prediction matrix (nr_inst, nr_labels)
+        """
+        if X.shape[1] != self.nr_features:
+            raise ValueError("Feature dimension of query matrix does not match weight matrix")
+        if X.shape[0] != csr_codes.shape[0]:
+            raise ValueError("Instance dimension of query and select output matrix do not match")
+
+        if csr_codes.shape[1] != self.nr_labels:
+            raise ValueError("Label dimension of select output matrix does not match")
+
+        pred_params = self.get_pred_params() if pred_params is None else pred_params
+        pred_params.override_with_kwargs(kwargs)
+        if not pred_params.is_valid():
+            raise ValueError("pred_params is not valid!")
+
+        pred_alloc = ScipyCompressedSparseAllocator()
+
+        clib.xlinear_single_layer_predict_select_outputs(
+            X,
+            csr_codes,
+            prev_pred_csr,
+            self.W,
+            self.C,
+            pred_params.post_processor,
+            kwargs.get("threads", -1),
+            self.bias,
+            pred_alloc,
+        )
+
+        return pred_alloc.get()
+
     def get_submodel(self, selected_codes=None, selected_labels=None, reindex=False):
         """Slice/sparsify the model based on connections to given code and labels.
 
@@ -1410,6 +1465,71 @@ class HierarchicalMLModel(pecos.BaseClass):
                 )
 
             return pred_csr
+
+    def predict_select_outputs(
+        self,
+        X,
+        select_outputs,
+        pred_params=None,
+        **kwargs,
+    ):
+        """Predict on given input data
+        Args:
+            X (csr_matrix or ndarray): instance feature matrix to predict on
+            select_outputs (csr_matrix): the prediction from pervious matchers (nr_inst, nr_labels).
+            pred_params (HierarchicalMLModel.PredParams, optional): instance of HierarchicalMLModel.PredParams.
+                Default None to use the pred_params used in model training.
+            kwargs: overriding prediction parameters for backward compatibility
+                post_processor (str, optional):  override the post_processor specified in pred_params (all layers)
+                    Default None to disable overriding
+                threads (int, optional): the number of threads to use for training.
+                    Defaults to -1 to use all
+        Returns:
+            pred_csr (csr_matrix): prediction matrix (nr_inst, nr_labels)
+        """
+        assert X.dtype == np.float32
+        assert isinstance(X, smat.csr_matrix) or (
+            isinstance(X, np.ndarray) and X.flags["C_CONTIGUOUS"]
+        )
+        assert X.shape[1] == self.nr_features
+        assert isinstance(select_outputs, smat.csr_matrix)
+        assert select_outputs.shape[1] == self.nr_labels
+        assert X.shape[0] == select_outputs.shape[0]
+
+        # construct pred_params
+        if pred_params is None:
+            pred_params = self.get_pred_params()
+        elif isinstance(pred_params, self.PredParams):
+            pred_params = self.PredParams.from_dict(pred_params)
+            pred_params = self._duplicate_fields_with_name_ending_with_chain(
+                pred_params, self.PredParams, self.depth
+            )
+        else:
+            raise ValueError("unknown type(pred_params)!!")
+        pred_params.override_with_kwargs(kwargs)
+
+        if self.is_predict_only:
+            raise NotImplementedError("is_predict_only=True not supported")
+        else:
+            csr_codes = []
+            csr_codes.insert(0, select_outputs)
+            for d in range(self.depth - 2, -1, -1):
+                prev_csr_codes = clib.condense_sparsity_pattern(
+                    csr_codes[0], self.model_chain[d + 1].C
+                )
+                csr_codes.insert(0, prev_csr_codes)
+
+            prev_pred_csr = None
+            for d in range(self.depth):
+                prev_pred_csr = self.model_chain[d].predict_select_outputs(
+                    X=X,
+                    csr_codes=csr_codes[d],
+                    prev_pred_csr=prev_pred_csr,
+                    pred_params=pred_params.model_chain[d],
+                    threads=kwargs.get("threads", -1),
+                )
+
+            return prev_pred_csr
 
     def set_output_constraint(self, labels_to_keep):
         """
