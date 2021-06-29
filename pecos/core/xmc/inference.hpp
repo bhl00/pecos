@@ -35,6 +35,7 @@
 #include <type_traits>
 #include <unistd.h>
 #include <vector>
+#include <unordered_set>
 #include "utils/matrix.hpp"
 #include "third_party/nlohmann_json/json.hpp"
 #include "third_party/robin_hood_hashing/robin_hood.h"
@@ -1125,6 +1126,180 @@ namespace pecos {
 
     }
 
+    // Prolongates the predictions of the previous layer to the select children of nodes.
+    // The result is returned as a csr_t matrix.
+    csr_t prolongate_sparse_predictions(const csr_t& csr_pred, const csc_t& C, const csr_t& csr_codes) {
+        typedef typename csr_t::mem_index_type mem_index_type;
+        typedef typename csr_t::index_type index_type;
+        typedef typename csr_t::value_type value_type;
+
+        auto rows = csr_codes.rows;
+        auto cols = csr_codes.cols;
+
+        // Compute the nnz's of each row
+        mem_index_type* row_ptr = new mem_index_type[rows + 1];
+        row_ptr[0] = 0;
+#pragma omp parallel for schedule(dynamic,4)
+        for (index_type row = 0; row < rows; ++row) {
+            index_type row_nnz = 0;
+
+            mem_index_type csr_codes_row_start = csr_codes.row_ptr[row];
+            mem_index_type csr_codes_row_end = csr_codes.row_ptr[row + 1];
+
+            std::unordered_set<index_type> valid_cols;
+            for (mem_index_type i = csr_codes_row_start; i < csr_codes_row_end; ++i) {
+                valid_cols.insert(csr_codes.col_idx[i]);
+            }
+
+            mem_index_type csr_pred_row_start = csr_pred.row_ptr[row];
+            mem_index_type csr_pred_row_end = csr_pred.row_ptr[row + 1];
+
+            for (mem_index_type i = csr_pred_row_start; i < csr_pred_row_end; ++i) {
+                mem_index_type C_col_start = C.col_ptr[csr_pred.col_idx[i]];
+                mem_index_type C_col_end = C.col_ptr[csr_pred.col_idx[i] + 1];
+
+                for (mem_index_type j = C_col_start; j < C_col_end; ++j) {
+                    if (valid_cols.count(C.row_idx[j])) {
+                        row_nnz++;
+                    }
+                }
+            }
+
+            row_ptr[row + 1] = row_nnz;
+        }
+
+        // Perform summation
+        for (index_type i = 0; i < rows; ++i) {
+            row_ptr[i + 1] += row_ptr[i];
+        }
+
+        // Allocate the col_idx entries
+        auto nnz = row_ptr[rows];
+        index_type* col_idx = new index_type[nnz];
+        value_type* val = new value_type[nnz];
+
+        // Actually compute the resulting labels
+#pragma omp parallel for schedule(dynamic,4)
+        for (index_type row = 0; row < rows; ++row) {
+            mem_index_type csr_codes_row_start = csr_codes.row_ptr[row];
+            mem_index_type csr_codes_row_end = csr_codes.row_ptr[row + 1];
+
+            std::unordered_set<index_type> valid_cols;
+            for (mem_index_type i = csr_codes_row_start; i < csr_codes_row_end; ++i) {
+                valid_cols.insert(csr_codes.col_idx[i]);
+            }
+
+            mem_index_type csr_pred_row_start = csr_pred.row_ptr[row];
+            mem_index_type csr_pred_row_end = csr_pred.row_ptr[row + 1];
+
+            mem_index_type output_row_start = row_ptr[row];
+            mem_index_type output_row_end = row_ptr[row + 1];
+            mem_index_type k = output_row_start;
+
+            std::map<index_type, value_type> col_to_val;
+            for (mem_index_type i = csr_pred_row_start; i < csr_pred_row_end; ++i) {
+                mem_index_type C_col_start = C.col_ptr[csr_pred.col_idx[i]];
+                mem_index_type C_col_end = C.col_ptr[csr_pred.col_idx[i] + 1];
+
+                for (mem_index_type j = C_col_start; j < C_col_end; ++j) {
+                    if (valid_cols.count(C.row_idx[j])) {
+                        /*col_idx[k] = C.row_idx[j];
+                        val[k] = csr_pred.val[i];
+                        ++k;*/
+                        col_to_val[C.row_idx[j]] = csr_pred.val[i];
+                    }
+                }
+            }
+
+            for (const auto& p : col_to_val) {
+                col_idx[k] = p.first;
+                val[k] = p.second;
+                ++k;
+            }
+        }
+
+        csr_t result;
+        result.col_idx = col_idx;
+        result.row_ptr = row_ptr;
+        result.rows = rows;
+        result.cols = cols;
+        result.val = val;
+        return result;
+    }
+
+    // Condenses the sparsity pattern of the next layer to all of the parent nodes.
+    csr_t condense_sparsity_pattern(const csr_t& csr_pred, const csc_t& C) {
+        typedef typename csr_t::mem_index_type mem_index_type;
+        typedef typename csr_t::index_type index_type;
+        typedef typename csr_t::value_type value_type;
+
+        csr_t csr_C = C.to_csr();
+
+        auto rows = csr_pred.rows;
+        auto cols = csr_C.cols;
+
+        // Compute the nnz's of each row
+        mem_index_type* row_ptr = new mem_index_type[rows + 1];
+        row_ptr[0] = 0;
+#pragma omp parallel for schedule(dynamic,4)
+        for (index_type row = 0; row < rows; ++row) {
+            index_type row_nnz = 0;
+
+            mem_index_type row_start = csr_pred.row_ptr[row];
+            mem_index_type row_end = csr_pred.row_ptr[row + 1];
+
+            std::unordered_set<index_type> unique_cols;
+            for (mem_index_type i = row_start; i < row_end; ++i) {
+                if (!unique_cols.count(csr_C.col_idx[csr_pred.col_idx[i]])) {
+                    row_nnz++;
+                    unique_cols.insert(csr_C.col_idx[csr_pred.col_idx[i]]);
+                }
+            }
+
+            row_ptr[row + 1] = row_nnz;
+        }
+
+        // Perform summation
+        for (index_type i = 0; i < rows; ++i) {
+            row_ptr[i + 1] += row_ptr[i];
+        }
+
+        // Allocate the col entries
+        mem_index_type nnz = row_ptr[rows];
+        index_type* col_idx = new index_type[nnz];
+        value_type* val = new value_type[nnz];
+
+        // Actually compute the resulting labels
+#pragma omp parallel for schedule(dynamic,4)
+        for (index_type row = 0; row < rows; ++row) {
+            mem_index_type csr_pred_row_start = csr_pred.row_ptr[row];
+            mem_index_type csr_pred_row_end = csr_pred.row_ptr[row + 1];
+
+            mem_index_type output_row_start = row_ptr[row];
+            mem_index_type i = output_row_start;
+
+            std::unordered_set<index_type> unique_cols;
+            for (mem_index_type j = csr_pred_row_start; j < csr_pred_row_end; ++j) {
+                if (!unique_cols.count(csr_C.col_idx[csr_pred.col_idx[j]])) {
+                    col_idx[i] = csr_C.col_idx[csr_pred.col_idx[j]];
+                    val[i] = csr_pred.val[j];
+                    unique_cols.insert(col_idx[i]);
+                    ++i;
+                }
+            }
+        }
+
+        csr_C.free_underlying_memory();
+
+        csr_t result;
+        result.col_idx = col_idx;
+        result.row_ptr = row_ptr;
+        result.rows = rows;
+        result.cols = cols;
+        result.val = val;
+        return result;
+    }
+
     void transform_matrix_csr(const PostProcessor<typename csr_t::value_type>& post_processor,
         csr_t& mat) {
         typedef typename csr_t::value_type value_type;
@@ -1280,6 +1455,25 @@ namespace pecos {
             csr_t& prev_layer_pred,
             bool is_first_layer,
             const uint32_t overridden_only_topk,
+            const char* overridden_post_processor,
+            csr_t& curr_layer_pred,
+            const int threads=-1
+        ) = 0;
+
+        virtual void predict_select_outputs(
+            const csr_t& X,
+            const csr_t& csr_codes,
+            const csr_t& prev_layer_pred,
+            bool is_first_layer,
+            const char* overridden_post_processor,
+            csr_t& curr_layer_pred,
+            const int threads=-1
+        ) = 0;
+        virtual void predict_select_outputs(
+            const drm_t& X,
+            const csr_t& csr_codes,
+            csr_t& prev_layer_pred,
+            bool is_first_layer,
             const char* overridden_post_processor,
             csr_t& curr_layer_pred,
             const int threads=-1
@@ -1711,6 +1905,88 @@ namespace pecos {
                 prev_layer_pred,
                 is_first_layer,
                 overridden_only_topk,
+                overridden_post_processor,
+                curr_layer_pred,
+                threads,
+                b_sort_by_chunk
+            );
+        }
+
+        // The internal prediction function for a sparse layer prediction, this method is templated to take any
+        // supported query matrix type. It is called by both versions of the ModelLayer::predict_select_outputs method
+        // X should have the same number of rows as csr_codes
+        template <typename query_mat_t, typename prediction_matrix_t>
+        void predict_select_outputs_internal(
+            const query_mat_t& X,
+            const csr_t& csr_codes,
+            const prediction_matrix_t& prev_layer_pred,
+            bool is_first_layer,
+            const char* overridden_post_processor,
+            prediction_matrix_t& curr_layer_pred,
+            const int threads=-1,
+            const bool b_sort_by_chunk=true
+        ) {
+
+            set_threads(threads);
+
+            const PostProcessor<value_type>& post_processor_to_use =
+                (overridden_post_processor == nullptr) ? post_processor
+                    : PostProcessor<value_type>::get(overridden_post_processor);
+
+            // Compute predictions for this layer
+            w_ops<w_matrix_t>::compute_sparse_predictions(X, layer_data.W,
+                csr_codes.row_ptr, csr_codes.col_idx,
+                b_sort_by_chunk, layer_data.bias, prev_layer_pred, curr_layer_pred);
+
+            // Transform the predictions for this layer and combine with previous layer
+            transform_matrix_csr(post_processor_to_use, curr_layer_pred);
+            if (!is_first_layer) {
+                csr_t labels = prolongate_sparse_predictions(prev_layer_pred, layer_data.C, csr_codes);
+                combine_matrices_csr(post_processor_to_use, curr_layer_pred, labels);
+                labels.free_underlying_memory();
+            }
+
+            // Reorder columns of prediction if necessary
+            layer_data.reorder_prediction(curr_layer_pred);
+        }
+
+        void predict_select_outputs(
+            const csr_t& X,
+            const csr_t& csr_codes,
+            const csr_t& prev_layer_pred,
+            bool is_first_layer,
+            const char* overridden_post_processor,
+            csr_t& curr_layer_pred,
+            const int threads=-1
+        ) override {
+            bool b_sort_by_chunk = (X.rows > 1) ? true : false;
+            predict_select_outputs_internal<csr_t, csr_t>(
+                X,
+                csr_codes,
+                prev_layer_pred,
+                is_first_layer,
+                overridden_post_processor,
+                curr_layer_pred,
+                threads,
+                b_sort_by_chunk
+            );
+        }
+
+        void predict_select_outputs(
+            const drm_t& X,
+            const csr_t& csr_codes,
+            csr_t& prev_layer_pred,
+            bool is_first_layer,
+            const char* overridden_post_processor,
+            csr_t& curr_layer_pred,
+            const int threads=-1
+        ) override {
+            bool b_sort_by_chunk=false;
+            predict_select_outputs_internal<drm_t, csr_t>(
+                X,
+                csr_codes,
+                prev_layer_pred,
+                is_first_layer,
                 overridden_post_processor,
                 curr_layer_pred,
                 threads,

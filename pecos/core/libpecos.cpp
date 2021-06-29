@@ -103,6 +103,43 @@ extern "C" {
     C_XLINEAR_SINGLE_LAYER_PREDICT(_drm_f32, ScipyDrmF32, pecos::drm_t)
 
 
+    #define C_XLINEAR_SINGLE_LAYER_PREDICT_SELECT_OUTPUTS(SUFFIX, PY_MAT, C_MAT) \
+    void c_xlinear_single_layer_predict_select_outputs ## SUFFIX( \
+        const PY_MAT* input_x, \
+        const ScipyCsrF32* csr_codes, \
+        const ScipyCsrF32* prev_pred_csr, \
+        ScipyCscF32* W, \
+        ScipyCscF32* C, \
+        const char* post_processor_str, \
+        const int num_threads, \
+        const float bias, \
+        py_sparse_allocator_t pred_alloc) { \
+        C_MAT X(input_x); \
+        pecos::csr_t curr_csr_codes = pecos::csr_t(csr_codes).deep_copy(); \
+        pecos::csr_t last_layer_pred; \
+        bool is_first_layer; \
+        if (prev_pred_csr) { \
+            last_layer_pred = pecos::csr_t(prev_pred_csr).deep_copy(); \
+            is_first_layer = false; \
+        } else { \
+            last_layer_pred.fill_ones(X.rows, 1); \
+            is_first_layer = true; \
+        } \
+        pecos::csc_t C_; \
+        C_ = pecos::csc_t(C); \
+        pecos::csr_t cur_layer_pred; \
+        pecos::csc_t W_ = pecos::csc_t(W); \
+        pecos::MLModelMetadata metadata(bias, 0, post_processor_str); \
+        pecos::MLModel<pecos::csc_t> layer(W_, C_, 0, false, metadata); \
+        layer.predict_select_outputs(X, curr_csr_codes, last_layer_pred, is_first_layer, \
+            post_processor_str, cur_layer_pred, num_threads); \
+        cur_layer_pred.create_pycsr(pred_alloc); \
+        cur_layer_pred.free_underlying_memory(); \
+    }
+    C_XLINEAR_SINGLE_LAYER_PREDICT_SELECT_OUTPUTS(_csr_f32, ScipyCsrF32, pecos::csr_t)
+    C_XLINEAR_SINGLE_LAYER_PREDICT_SELECT_OUTPUTS(_drm_f32, ScipyDrmF32, pecos::drm_t)
+
+
     #define C_XLINEAR_SINGLE_LAYER_TRAIN(SUFFIX, PY_MAT, C_MAT) \
     void c_xlinear_single_layer_train ## SUFFIX( \
         const PY_MAT *pX, \
@@ -272,5 +309,19 @@ extern "C" {
         } else {
             throw std::runtime_error("Invalid nr_doc " + std::to_string(nr_doc));
         }
+    }
+
+    // ==== C Interface of matrix layer to layer manipulation ====
+
+    void c_condense_sparsity_pattern(
+        const ScipyCsrF32* csr_codes,
+        ScipyCscF32* C,
+        py_sparse_allocator_t res_alloc) {
+        pecos::csr_t curr_csr_codes = pecos::csr_t(csr_codes).deep_copy();
+        pecos::csc_t C_;
+        C_ = pecos::csc_t(C);
+        pecos::csr_t result = condense_sparsity_pattern(curr_csr_codes, C_);
+        result.create_pycsr(res_alloc);
+        result.free_underlying_memory();
     }
 }
