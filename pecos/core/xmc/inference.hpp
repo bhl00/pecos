@@ -1196,25 +1196,17 @@ namespace pecos {
             mem_index_type output_row_end = row_ptr[row + 1];
             mem_index_type k = output_row_start;
 
-            std::map<index_type, value_type> col_to_val;
             for (mem_index_type i = csr_pred_row_start; i < csr_pred_row_end; ++i) {
                 mem_index_type C_col_start = C.col_ptr[csr_pred.col_idx[i]];
                 mem_index_type C_col_end = C.col_ptr[csr_pred.col_idx[i] + 1];
 
                 for (mem_index_type j = C_col_start; j < C_col_end; ++j) {
                     if (valid_cols.count(C.row_idx[j])) {
-                        /*col_idx[k] = C.row_idx[j];
+                        col_idx[k] = C.row_idx[j];
                         val[k] = csr_pred.val[i];
-                        ++k;*/
-                        col_to_val[C.row_idx[j]] = csr_pred.val[i];
+                        ++k;
                     }
                 }
-            }
-
-            for (const auto& p : col_to_val) {
-                col_idx[k] = p.first;
-                val[k] = p.second;
-                ++k;
             }
         }
 
@@ -1933,21 +1925,20 @@ namespace pecos {
                 (overridden_post_processor == nullptr) ? post_processor
                     : PostProcessor<value_type>::get(overridden_post_processor);
 
+            csr_t labels = prolongate_sparse_predictions(prev_layer_pred, layer_data.C, csr_codes);
+
             // Compute predictions for this layer
             w_ops<w_matrix_t>::compute_sparse_predictions(X, layer_data.W,
-                csr_codes.row_ptr, csr_codes.col_idx,
+                labels.row_ptr, labels.col_idx,
                 b_sort_by_chunk, layer_data.bias, prev_layer_pred, curr_layer_pred);
 
             // Transform the predictions for this layer and combine with previous layer
             transform_matrix_csr(post_processor_to_use, curr_layer_pred);
             if (!is_first_layer) {
-                csr_t labels = prolongate_sparse_predictions(prev_layer_pred, layer_data.C, csr_codes);
                 combine_matrices_csr(post_processor_to_use, curr_layer_pred, labels);
-                labels.free_underlying_memory();
             }
 
-            // Reorder columns of prediction if necessary
-            layer_data.reorder_prediction(curr_layer_pred);
+            labels.free_underlying_memory();
         }
 
         void predict_select_outputs(
