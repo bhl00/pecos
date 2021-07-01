@@ -1147,6 +1147,7 @@ namespace pecos {
             mem_index_type csr_codes_row_end = csr_codes.row_ptr[row + 1];
 
             std::unordered_set<index_type> valid_cols;
+            valid_cols.reserve(csr_codes_row_end - csr_codes_row_start);
             for (mem_index_type i = csr_codes_row_start; i < csr_codes_row_end; ++i) {
                 valid_cols.insert(csr_codes.col_idx[i]);
             }
@@ -1185,6 +1186,7 @@ namespace pecos {
             mem_index_type csr_codes_row_end = csr_codes.row_ptr[row + 1];
 
             std::unordered_set<index_type> valid_cols;
+            valid_cols.reserve(csr_codes_row_end - csr_codes_row_start);
             for (mem_index_type i = csr_codes_row_start; i < csr_codes_row_end; ++i) {
                 valid_cols.insert(csr_codes.col_idx[i]);
             }
@@ -1241,6 +1243,7 @@ namespace pecos {
             mem_index_type row_end = csr_pred.row_ptr[row + 1];
 
             std::unordered_set<index_type> unique_cols;
+            unique_cols.reserve(row_end - row_start);
             for (mem_index_type i = row_start; i < row_end; ++i) {
                 if (!unique_cols.count(csr_C.col_idx[csr_pred.col_idx[i]])) {
                     row_nnz++;
@@ -1271,6 +1274,7 @@ namespace pecos {
             mem_index_type i = output_row_start;
 
             std::unordered_set<index_type> unique_cols;
+            unique_cols.reserve(csr_pred_row_end - csr_pred_row_start);
             for (mem_index_type j = csr_pred_row_start; j < csr_pred_row_end; ++j) {
                 if (!unique_cols.count(csr_C.col_idx[csr_pred.col_idx[j]])) {
                     col_idx[i] = csr_C.col_idx[csr_pred.col_idx[j]];
