@@ -834,8 +834,6 @@ class corelib(object):
 
         W = ScipyCscF32.init_from(W)
 
-        if not csr_codes.has_sorted_indices:
-            csr_codes.sort_indices()
         csr_codes = ScipyCsrF32.init_from(csr_codes)
 
         if isinstance(X, smat.csr_matrix):
