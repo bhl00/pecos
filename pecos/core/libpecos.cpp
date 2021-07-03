@@ -98,6 +98,7 @@ extern "C" {
             post_processor_str, cur_layer_pred, num_threads); \
         cur_layer_pred.create_pycsr(pred_alloc); \
         cur_layer_pred.free_underlying_memory(); \
+        last_layer_pred.free_underlying_memory(); \
     }
     C_XLINEAR_SINGLE_LAYER_PREDICT(_csr_f32, ScipyCsrF32, pecos::csr_t)
     C_XLINEAR_SINGLE_LAYER_PREDICT(_drm_f32, ScipyDrmF32, pecos::drm_t)
