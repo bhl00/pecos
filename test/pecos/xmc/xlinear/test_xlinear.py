@@ -743,3 +743,155 @@ def test_get_submodel():
     assert 0 in out["active_labels"]
     assert 1 in out["active_labels"]
     assert 3 in out["active_labels"]
+
+
+def test_predict_consistency_between_topk_and_select(tmpdir):
+    from pecos.xmc import PostProcessor, Indexer, LabelEmbeddingFactory
+    from pecos.xmc.xlinear import XLinearModel
+
+    train_X_file = "test/tst-data/xmc/xlinear/X.npz"
+    train_Y_file = "test/tst-data/xmc/xlinear/Y.npz"
+    test_X_file = "test/tst-data/xmc/xlinear/Xt.npz"
+    Xt = XLinearModel.load_feature_matrix(train_X_file)
+    Yt = XLinearModel.load_feature_matrix(train_Y_file)
+    model_folder = str(tmpdir.join("save_model"))
+    label_feat = LabelEmbeddingFactory.create(Yt, Xt, method="pifa")
+
+    model_folder_list = []
+    # Obtain xlinear models with vairous number of splits
+    for splits in [2, 4]:
+        model_folder_local = f"{model_folder}-{splits}"
+        cluster_chain = Indexer.gen(label_feat, nr_splits=splits, max_leaf_size=2)
+        py_model = XLinearModel.train(Xt, Yt, C=cluster_chain)
+        py_model.save(model_folder_local)
+        model_folder_list.append(model_folder_local)
+
+    X = XLinearModel.load_feature_matrix(test_X_file)
+    label_size = Yt.shape[1]
+
+    select_outputs_list = []
+    select_outputs_list.append(
+        set([0, label_size // 3, label_size // 2, label_size * 2 // 3, label_size - 1])
+    )
+    select_outputs_list.append(set([n for n in range(label_size // 10)]))
+    select_outputs_list.append(set([n for n in range(label_size)]))
+
+    for model_folder_local in model_folder_list:
+        model = XLinearModel.load(model_folder_local, is_predict_only=False)
+
+        for pp in PostProcessor.valid_list():
+            # Batch mode topk
+            py_sparse_topk_pred = model.predict(X, post_processor=pp)
+            py_dense_topk_pred = model.predict(X.todense(), post_processor=pp)
+
+            # Sparse Input
+            py_select_sparse_topk_pred = model.predict_select_outputs(
+                X, py_sparse_topk_pred, post_processor=pp
+            )
+            # Dense Input
+            py_select_dense_topk_pred = model.predict_select_outputs(
+                X, py_dense_topk_pred, post_processor=pp
+            )
+
+            assert py_sparse_topk_pred.todense() == approx(
+                py_select_sparse_topk_pred.todense(), abs=1e-6
+            ), f"model:{model_folder_local} (batch, sparse, topk) post_processor:{pp})"
+            assert py_dense_topk_pred.todense() == approx(
+                py_select_dense_topk_pred.todense(), abs=1e-6
+            ), f"model:{model_folder_local} (batch, dense, topk) post_processor:{pp})"
+
+            # Batch mode select output(symmetric, assymetric, all)
+            py_sparse_pred = model.predict(X, only_topk=label_size, post_processor=pp)
+            py_dense_pred = model.predict(X.todense(), only_topk=label_size, post_processor=pp)
+
+            for select_output in select_outputs_list:
+                true_sparse_pred = py_sparse_pred.copy()
+                for i_nnz in range(true_sparse_pred.nnz):
+                    if true_sparse_pred.indices[i_nnz] not in select_output:
+                        true_sparse_pred.data[i_nnz] = 0
+                true_sparse_pred.eliminate_zeros()
+
+                true_dense_pred = py_dense_pred.copy()
+                for i_nnz in range(true_dense_pred.nnz):
+                    if true_dense_pred.indices[i_nnz] not in select_output:
+                        true_dense_pred.data[i_nnz] = 0
+                true_dense_pred.eliminate_zeros()
+
+                # Sparse Input
+                py_select_sparse_pred = model.predict_select_outputs(
+                    X, true_sparse_pred, post_processor=pp
+                )
+                # Dense Input
+                py_select_dense_pred = model.predict_select_outputs(
+                    X.todense(), true_dense_pred, post_processor=pp
+                )
+
+                assert true_sparse_pred.todense() == approx(
+                    py_select_sparse_pred.todense(), abs=1e-6
+                ), f"model:{model_folder_local} (batch, sparse, select) post_processor:{pp}"
+                assert true_dense_pred.todense() == approx(
+                    py_select_dense_pred.todense(), abs=1e-6
+                ), f"model:{model_folder_local} (batch, dense, select) post_processor:{pp}"
+
+            # Realtime mode topk
+            for i in range(X.shape[0]):
+                query_slice = X[[i], :]
+                query_slice.sort_indices()
+
+                py_sparse_realtime_pred = model.predict(query_slice, post_processor=pp)
+                py_dense_realtime_pred = model.predict(query_slice.todense(), post_processor=pp)
+
+                # Sparse Input
+                py_select_sparse_realtime_pred = model.predict_select_outputs(
+                    query_slice, py_sparse_realtime_pred, post_processor=pp
+                )
+                # Dense input
+                py_select_dense_realtime_pred = model.predict_select_outputs(
+                    query_slice, py_dense_realtime_pred, post_processor=pp
+                )
+
+                assert py_sparse_realtime_pred.todense() == approx(
+                    py_select_sparse_realtime_pred.todense(), abs=1e-6
+                ), f"model:{model_folder_local} (realtime, sparse, topk) post_processor:{pp}"
+                assert py_dense_realtime_pred.todense() == approx(
+                    py_select_dense_realtime_pred.todense(), abs=1e-6
+                ), f"model:{model_folder_local} (realtime, dense, topk) post_processor:{pp}"
+
+            # Realtime mode select output(symmetric, assymetric, all)
+            for i in range(X.shape[0]):
+                query_slice = X[[i], :]
+                query_slice.sort_indices()
+
+                py_sparse_pred = model.predict(query_slice, only_topk=label_size, post_processor=pp)
+                py_dense_pred = model.predict(
+                    query_slice.todense(), only_topk=label_size, post_processor=pp
+                )
+
+                for select_output in select_outputs_list:
+                    true_sparse_pred = py_sparse_pred.copy()
+                    for i_nnz in range(true_sparse_pred.nnz):
+                        if true_sparse_pred.indices[i_nnz] not in select_output:
+                            true_sparse_pred.data[i_nnz] = 0
+                    true_sparse_pred.eliminate_zeros()
+
+                    true_dense_pred = py_dense_pred.copy()
+                    for i_nnz in range(true_dense_pred.nnz):
+                        if true_dense_pred.indices[i_nnz] not in select_output:
+                            true_dense_pred.data[i_nnz] = 0
+                    true_dense_pred.eliminate_zeros()
+
+                    # Sparse Input
+                    py_select_sparse_pred = model.predict_select_outputs(
+                        query_slice, true_sparse_pred, post_processor=pp
+                    )
+                    # Dense Input
+                    py_select_dense_pred = model.predict_select_outputs(
+                        query_slice.todense(), true_dense_pred, post_processor=pp
+                    )
+
+                    assert true_sparse_pred.todense() == approx(
+                        py_select_sparse_pred.todense(), abs=1e-6
+                    ), f"model:{model_folder_local} (realtime, sparse, select) post_processor:{pp}"
+                    assert true_dense_pred.todense() == approx(
+                        py_select_dense_pred.todense(), abs=1e-6
+                    ), f"model:{model_folder_local} (realtime, dense, select) post_processor:{pp}"
