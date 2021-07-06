@@ -103,6 +103,15 @@ def parse_arguments():
         metavar="THREADS",
         help="number of threads to use (default -1 to denote all the CPUs)",
     )
+
+    parser.add_argument(
+        "-so",
+        "--select-output",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="path to the npz file of the select output matrix (CSR, nr_insts * nr_labels)",
+    )
     return parser
 
 
@@ -116,30 +125,59 @@ def do_predict(args):
     # Load data
     Xt = XLinearModel.load_feature_matrix(args.inst_path)
 
-    # Model Predicting
-    xlinear_model = XLinearModel.load(args.model_folder, is_predict_only=True)
+    # Select Output
+    if args.select_output is not None:
+        Y_select = XLinearModel.load_feature_matrix(args.select_output)
+        xlinear_model = XLinearModel.load(args.model_folder, is_predict_only=False)
 
-    if args.batch_size is not None:
-        Yts = []
-        for i in range(0, Xt.shape[0], args.batch_size):
-            Yte = xlinear_model.predict(
-                Xt[i : i + args.batch_size, :],
+        if args.batch_size is not None:
+            Yts = []
+            for i in range(0, Xt.shape[0], args.batch_size):
+                Yte = xlinear_model.predict_select_outputs(
+                    Xt[i : i + args.batch_size, :],
+                    Y_select[i : i + args.batch_size, :],
+                    only_topk=args.only_topk,
+                    beam_size=args.beam_size,
+                    post_processor=args.post_processor,
+                    threads=args.threads,
+                )
+                Yts.append(Yte)
+            # vstack_csr will retain indices order
+            Yt_pred = smat_util.vstack_csr(Yts)
+        else:
+            Yt_pred = xlinear_model.predict_select_outputs(
+                Xt,
+                Y_select,
                 only_topk=args.only_topk,
                 beam_size=args.beam_size,
                 post_processor=args.post_processor,
                 threads=args.threads,
             )
-            Yts.append(Yte)
-        # vstack_csr will retain indices order
-        Yt_pred = smat_util.vstack_csr(Yts)
     else:
-        Yt_pred = xlinear_model.predict(
-            Xt,
-            only_topk=args.only_topk,
-            beam_size=args.beam_size,
-            post_processor=args.post_processor,
-            threads=args.threads,
-        )
+        # Model Predicting
+        xlinear_model = XLinearModel.load(args.model_folder, is_predict_only=True)
+
+        if args.batch_size is not None:
+            Yts = []
+            for i in range(0, Xt.shape[0], args.batch_size):
+                Yte = xlinear_model.predict(
+                    Xt[i : i + args.batch_size, :],
+                    only_topk=args.only_topk,
+                    beam_size=args.beam_size,
+                    post_processor=args.post_processor,
+                    threads=args.threads,
+                )
+                Yts.append(Yte)
+            # vstack_csr will retain indices order
+            Yt_pred = smat_util.vstack_csr(Yts)
+        else:
+            Yt_pred = xlinear_model.predict(
+                Xt,
+                only_topk=args.only_topk,
+                beam_size=args.beam_size,
+                post_processor=args.post_processor,
+                threads=args.threads,
+            )
 
     # Save prediction
     if args.save_pred_path:
