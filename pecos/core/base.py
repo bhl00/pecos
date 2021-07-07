@@ -635,13 +635,6 @@ class corelib(object):
             self.clib_float32.c_xlinear_single_layer_predict_select_outputs_drm_f32, None, arg_list
         )
 
-        arg_list = [
-            POINTER(ScipyCsrF32),
-            POINTER(ScipyCscF32),
-            ScipyCompressedSparseAllocator.CFUNCTYPE,
-        ]
-        corelib.fillprototype(self.clib_float32.c_condense_sparsity_pattern, None, arg_list)
-
         res_list = c_uint32
         arg_list = [c_void_p, c_char_p]
         corelib.fillprototype(self.clib_float32.c_xlinear_get_int_attr, res_list, arg_list)
@@ -803,8 +796,8 @@ class corelib(object):
     def xlinear_single_layer_predict_select_outputs(
         self,
         X,
+        select_outputs_csr,
         csr_codes,
-        prev_pred_csr,
         W,
         C,
         post_processor_str,
@@ -816,11 +809,11 @@ class corelib(object):
         Performs a single layer prediction in C++ using matrices owned by Python.
 
         Args:
-            X (csr_matrix): The query matrix.
+            X (csr_matrix or ndarray): The query matrix.
                 Note that if this is smat.csr_matrix, the matrix must have sorted indices.
                 You can call sort_indices() to ensure this.
-            csr_codes (csr_matrix): The select output to predict
-            prev_pred_csr (smat.csr_matrix or ScipyCsrF32): The prediction for the previous layer, None if this is the first layer.
+            select_outputs_csr (csr_matrix): The select output to predict
+            csr_codes (smat.csr_matrix or ScipyCsrF32): The prediction for the previous layer, None if this is the first layer.
             W (smat.csc_matrix, ScipyCscF32): The weight matrix for this layer.
             C (smat.csc_matrix, ScipyCscF32): The child/parent map for this layer.
             post_processor_str (str): A string specifying which post processor to use.
@@ -834,7 +827,7 @@ class corelib(object):
 
         W = ScipyCscF32.init_from(W)
 
-        csr_codes = ScipyCsrF32.init_from(csr_codes)
+        select_outputs_csr = ScipyCsrF32.init_from(select_outputs_csr)
 
         if isinstance(X, smat.csr_matrix):
             if not X.has_sorted_indices:
@@ -851,8 +844,8 @@ class corelib(object):
             raise NotImplementedError("type(X) = {} not implemented".format(type(X)))
 
         # prev_pred_csr and pC might be null
-        if prev_pred_csr is not None:
-            prev_pred_csr = ScipyCsrF32.init_from(prev_pred_csr)
+        if csr_codes is not None:
+            csr_codes = ScipyCsrF32.init_from(csr_codes)
 
         if C is None:
             C = smat.csc_matrix(np.ones((W.shape[1], 1), dtype=W.dtype))
@@ -860,8 +853,8 @@ class corelib(object):
 
         c_single_layer_predict(
             byref(X),
-            byref(csr_codes),
-            byref(prev_pred_csr) if prev_pred_csr is not None else None,
+            byref(select_outputs_csr),
+            byref(csr_codes) if csr_codes is not None else None,
             byref(W),
             byref(C),
             post_processor_str,
@@ -1403,22 +1396,6 @@ class corelib(object):
                 pred_alloc.cfunc,
             )
         return pred_alloc.get()
-
-    def condense_sparsity_pattern(self, csr_codes, C):
-        clib = self.clib_float32
-
-        csr_codes = ScipyCsrF32.init_from(csr_codes)
-        C = ScipyCscF32.init_from(C)
-
-        ret_alloc = ScipyCompressedSparseAllocator()
-
-        clib.c_condense_sparsity_pattern(
-            csr_codes,
-            C,
-            ret_alloc.cfunc,
-        )
-
-        return ret_alloc.get()
 
 
 clib = corelib(os.path.join(os.path.dirname(os.path.abspath(pecos.__file__)), "core"), "libpecos")

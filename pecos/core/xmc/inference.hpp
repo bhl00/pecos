@@ -1221,81 +1221,6 @@ namespace pecos {
         return result;
     }
 
-    // Condenses the sparsity pattern of the next layer to all of the parent nodes.
-    csr_t condense_sparsity_pattern(const csr_t& csr_pred, const csc_t& C) {
-        typedef typename csr_t::mem_index_type mem_index_type;
-        typedef typename csr_t::index_type index_type;
-        typedef typename csr_t::value_type value_type;
-
-        csr_t csr_C = C.to_csr();
-
-        auto rows = csr_pred.rows;
-        auto cols = csr_C.cols;
-
-        // Compute the nnz's of each row
-        mem_index_type* row_ptr = new mem_index_type[rows + 1];
-        row_ptr[0] = 0;
-#pragma omp parallel for schedule(dynamic,4)
-        for (index_type row = 0; row < rows; ++row) {
-            index_type row_nnz = 0;
-
-            mem_index_type row_start = csr_pred.row_ptr[row];
-            mem_index_type row_end = csr_pred.row_ptr[row + 1];
-
-            std::unordered_set<index_type> unique_cols;
-            unique_cols.reserve(row_end - row_start);
-            for (mem_index_type i = row_start; i < row_end; ++i) {
-                if (!unique_cols.count(csr_C.col_idx[csr_pred.col_idx[i]])) {
-                    row_nnz++;
-                    unique_cols.insert(csr_C.col_idx[csr_pred.col_idx[i]]);
-                }
-            }
-
-            row_ptr[row + 1] = row_nnz;
-        }
-
-        // Perform summation
-        for (index_type i = 0; i < rows; ++i) {
-            row_ptr[i + 1] += row_ptr[i];
-        }
-
-        // Allocate the col entries
-        mem_index_type nnz = row_ptr[rows];
-        index_type* col_idx = new index_type[nnz];
-        value_type* val = new value_type[nnz];
-
-        // Actually compute the resulting labels
-#pragma omp parallel for schedule(dynamic,4)
-        for (index_type row = 0; row < rows; ++row) {
-            mem_index_type csr_pred_row_start = csr_pred.row_ptr[row];
-            mem_index_type csr_pred_row_end = csr_pred.row_ptr[row + 1];
-
-            mem_index_type output_row_start = row_ptr[row];
-            mem_index_type i = output_row_start;
-
-            std::unordered_set<index_type> unique_cols;
-            unique_cols.reserve(csr_pred_row_end - csr_pred_row_start);
-            for (mem_index_type j = csr_pred_row_start; j < csr_pred_row_end; ++j) {
-                if (!unique_cols.count(csr_C.col_idx[csr_pred.col_idx[j]])) {
-                    col_idx[i] = csr_C.col_idx[csr_pred.col_idx[j]];
-                    val[i] = csr_pred.val[j];
-                    unique_cols.insert(col_idx[i]);
-                    ++i;
-                }
-            }
-        }
-
-        csr_C.free_underlying_memory();
-
-        csr_t result;
-        result.col_idx = col_idx;
-        result.row_ptr = row_ptr;
-        result.rows = rows;
-        result.cols = cols;
-        result.val = val;
-        return result;
-    }
-
     void transform_matrix_csr(const PostProcessor<typename csr_t::value_type>& post_processor,
         csr_t& mat) {
         typedef typename csr_t::value_type value_type;
@@ -1458,8 +1383,8 @@ namespace pecos {
 
         virtual void predict_select_outputs(
             const csr_t& X,
+            const csr_t& select_outputs_csr,
             const csr_t& csr_codes,
-            const csr_t& prev_layer_pred,
             bool is_first_layer,
             const char* overridden_post_processor,
             csr_t& curr_layer_pred,
@@ -1467,8 +1392,8 @@ namespace pecos {
         ) = 0;
         virtual void predict_select_outputs(
             const drm_t& X,
-            const csr_t& csr_codes,
-            csr_t& prev_layer_pred,
+            const csr_t& select_outputs_csr,
+            csr_t& csr_codes,
             bool is_first_layer,
             const char* overridden_post_processor,
             csr_t& curr_layer_pred,
@@ -1914,8 +1839,8 @@ namespace pecos {
         template <typename query_mat_t, typename prediction_matrix_t>
         void predict_select_outputs_internal(
             const query_mat_t& X,
-            const csr_t& csr_codes,
-            const prediction_matrix_t& prev_layer_pred,
+            const csr_t& select_outputs_csr,
+            const prediction_matrix_t& csr_codes,
             bool is_first_layer,
             const char* overridden_post_processor,
             prediction_matrix_t& curr_layer_pred,
@@ -1929,12 +1854,12 @@ namespace pecos {
                 (overridden_post_processor == nullptr) ? post_processor
                     : PostProcessor<value_type>::get(overridden_post_processor);
 
-            csr_t labels = prolongate_sparse_predictions(prev_layer_pred, layer_data.C, csr_codes);
+            csr_t labels = prolongate_sparse_predictions(csr_codes, layer_data.C, select_outputs_csr);
 
             // Compute predictions for this layer
             w_ops<w_matrix_t>::compute_sparse_predictions(X, layer_data.W,
                 labels.row_ptr, labels.col_idx,
-                b_sort_by_chunk, layer_data.bias, prev_layer_pred, curr_layer_pred);
+                b_sort_by_chunk, layer_data.bias, csr_codes, curr_layer_pred);
 
             // Transform the predictions for this layer and combine with previous layer
             transform_matrix_csr(post_processor_to_use, curr_layer_pred);
@@ -1947,8 +1872,8 @@ namespace pecos {
 
         void predict_select_outputs(
             const csr_t& X,
+            const csr_t& select_outputs_csr,
             const csr_t& csr_codes,
-            const csr_t& prev_layer_pred,
             bool is_first_layer,
             const char* overridden_post_processor,
             csr_t& curr_layer_pred,
@@ -1957,8 +1882,8 @@ namespace pecos {
             bool b_sort_by_chunk = (X.rows > 1) ? true : false;
             predict_select_outputs_internal<csr_t, csr_t>(
                 X,
+                select_outputs_csr,
                 csr_codes,
-                prev_layer_pred,
                 is_first_layer,
                 overridden_post_processor,
                 curr_layer_pred,
@@ -1969,8 +1894,8 @@ namespace pecos {
 
         void predict_select_outputs(
             const drm_t& X,
-            const csr_t& csr_codes,
-            csr_t& prev_layer_pred,
+            const csr_t& select_outputs_csr,
+            csr_t& csr_codes,
             bool is_first_layer,
             const char* overridden_post_processor,
             csr_t& curr_layer_pred,
@@ -1979,8 +1904,8 @@ namespace pecos {
             bool b_sort_by_chunk=false;
             predict_select_outputs_internal<drm_t, csr_t>(
                 X,
+                select_outputs_csr,
                 csr_codes,
-                prev_layer_pred,
                 is_first_layer,
                 overridden_post_processor,
                 curr_layer_pred,

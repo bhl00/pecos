@@ -821,8 +821,8 @@ class MLModel(pecos.BaseClass):
     def predict_select_outputs(
         self,
         X,
-        csr_codes,
-        prev_pred_csr=None,
+        select_outputs_csr,
+        csr_codes=None,
         pred_params=None,
         **kwargs,
     ):
@@ -830,8 +830,8 @@ class MLModel(pecos.BaseClass):
 
         Args:
             X (csr_matrix or ndarray): instance feature matrix to predict on
-            csr_codes (csr_matrix): the select outputs to predict
-            prev_pred_csr (csr_matrix): the prediction from previous matchers (nr_inst, nr_codes).
+            select_outputs_csr (csr_matrix): the select outputs to predict
+            csr_codes (csr_matrix): the prediction from previous matchers (nr_inst, nr_codes).
                 Default None to ignore
             pred_params (MLModel.PredParams, optional): instance of MLModel.PredParams.
                 Default None to use the pred_params used in model training.
@@ -846,10 +846,10 @@ class MLModel(pecos.BaseClass):
         """
         if X.shape[1] != self.nr_features:
             raise ValueError("Feature dimension of query matrix does not match weight matrix")
-        if X.shape[0] != csr_codes.shape[0]:
+        if X.shape[0] != select_outputs_csr.shape[0]:
             raise ValueError("Instance dimension of query and select output matrix do not match")
 
-        if csr_codes.shape[1] != self.nr_labels:
+        if select_outputs_csr.shape[1] != self.nr_labels:
             raise ValueError("Label dimension of select output matrix does not match")
 
         pred_params = self.get_pred_params() if pred_params is None else pred_params
@@ -861,8 +861,8 @@ class MLModel(pecos.BaseClass):
 
         clib.xlinear_single_layer_predict_select_outputs(
             X,
+            select_outputs_csr,
             csr_codes,
-            prev_pred_csr,
             self.W,
             self.C,
             pred_params.post_processor,
@@ -1469,14 +1469,14 @@ class HierarchicalMLModel(pecos.BaseClass):
     def predict_select_outputs(
         self,
         X,
-        select_outputs,
+        select_outputs_csr,
         pred_params=None,
         **kwargs,
     ):
         """Predict on given input data
         Args:
             X (csr_matrix or ndarray): instance feature matrix to predict on
-            select_outputs (csr_matrix): the prediction from pervious matchers (nr_inst, nr_labels).
+            select_outputs_csr (csr_matrix): the prediction from pervious matchers (nr_inst, nr_labels).
             pred_params (HierarchicalMLModel.PredParams, optional): instance of HierarchicalMLModel.PredParams.
                 Default None to use the pred_params used in model training.
             kwargs: overriding prediction parameters for backward compatibility
@@ -1487,14 +1487,24 @@ class HierarchicalMLModel(pecos.BaseClass):
         Returns:
             pred_csr (csr_matrix): prediction matrix (nr_inst, nr_labels)
         """
-        assert X.dtype == np.float32
-        assert isinstance(X, smat.csr_matrix) or (
+        if X.dtype != np.float32:
+            raise ValueError("X.dtype = {} is not supported").format(X.dtype)
+        if not isinstance(X, smat.csr_matrix) and not (
             isinstance(X, np.ndarray) and X.flags["C_CONTIGUOUS"]
-        )
-        assert X.shape[1] == self.nr_features
-        assert isinstance(select_outputs, smat.csr_matrix)
-        assert select_outputs.shape[1] == self.nr_labels
-        assert X.shape[0] == select_outputs.shape[0]
+        ):
+            raise ValueError("type(X) = {} is not supported").format(type(X))
+        if X.shape[1] != self.nr_features:
+            raise ValueError("Feature dimension of query matrix does not match weight matrix")
+
+        if not isinstance(select_outputs_csr, smat.csr_matrix):
+            raise ValueError("type(select_outputs_csr) = {} is not supported").format(
+                type(select_outputs_csr)
+            )
+        if select_outputs_csr.shape[1] != self.nr_labels:
+            raise ValueError("Label dimension of select output matrix does not match")
+
+        if X.shape[0] != select_outputs_csr.shape[0]:
+            raise ValueError("Instance dimension of query and select output matrix do not match")
 
         # construct pred_params
         if pred_params is None:
@@ -1511,20 +1521,20 @@ class HierarchicalMLModel(pecos.BaseClass):
         if self.is_predict_only:
             raise NotImplementedError("is_predict_only=True not supported")
         else:
-            csr_codes = []
-            csr_codes.insert(0, select_outputs)
+            select_outputs_csrs = []
+            select_outputs_csrs.insert(0, select_outputs_csr)
             for d in range(self.depth - 2, -1, -1):
-                prev_csr_codes = clib.condense_sparsity_pattern(
-                    csr_codes[0], self.model_chain[d + 1].C
-                )
-                csr_codes.insert(0, prev_csr_codes)
+                prev_csr = clib.sparse_matmul(
+                    select_outputs_csrs[0], self.model_chain[d + 1].C
+                ).tocsr()
+                select_outputs_csrs.insert(0, prev_csr)
 
             prev_pred_csr = None
             for d in range(self.depth):
                 prev_pred_csr = self.model_chain[d].predict_select_outputs(
                     X=X,
-                    csr_codes=csr_codes[d],
-                    prev_pred_csr=prev_pred_csr,
+                    select_outputs_csr=select_outputs_csrs[d],
+                    csr_codes=prev_pred_csr,
                     pred_params=pred_params.model_chain[d],
                     threads=kwargs.get("threads", -1),
                 )
