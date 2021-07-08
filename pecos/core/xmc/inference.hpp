@@ -1402,6 +1402,8 @@ namespace pecos {
 
         virtual ~IModelLayer() = 0;
 
+        virtual csc_t get_C() const = 0;
+
         // Layer statistics
         virtual layer_statistics_t get_statistics() const = 0;
         virtual layer_type_t get_type() const = 0;
@@ -1917,6 +1919,10 @@ namespace pecos {
         ~MLModel() override {
         }
 
+        csc_t get_C() const override {
+            return layer_data.C.deep_copy();
+        }
+
         layer_statistics_t get_statistics() const override {
             return statistics;
         }
@@ -1993,6 +1999,10 @@ namespace pecos {
             return model_layers[i];
         }
 
+        inline layer_type_t layer_type() const {
+            return model_layers[model_layers.size() - 1]->get_type();
+        }
+
         inline uint32_t depth() const {
             return model_layers.size();
         }
@@ -2018,6 +2028,8 @@ namespace pecos {
                 return this->label_count();
             } else if (std::strcmp(attr, "nr_codes") == 0) {
                 return this->code_count();
+            } else if (std::strcmp(attr,"weight_matrix_type") == 0) {
+                return this->layer_type();
             } else {
                 std::string attr_str(attr);
                 std::runtime_error((attr_str, " is not implemented in get_int_attr."));
@@ -2134,6 +2146,78 @@ namespace pecos {
                 prev_layer_pred = curr_layer_pred;
             }
             prediction = prev_layer_pred;
+        }
+
+        /*
+        * Perform a select prediction using the specified parameters.
+        * Parameters:
+        *
+        * queries: The csr matrix of queries. Every row represents a query to the model.
+        *
+        * select_outputs_csr: The csr matrix of select outputs. Each non zero entry represents
+        * a pair to predict
+        *
+        * overridden_post_processor (optional): A string specifying which post-processor to use for
+        * predictions on each layer of the model. Set to nullptr to use defaults.
+        *
+        * threads (optional): The number of threads to use for prediction computations. Set to -1 to use maximum
+        * of threads.
+        *
+        * prediction (prediction_matrix_t): prediction output matrix
+        */
+        template <typename query_matrix_t, typename prediction_matrix_t>
+        void predict_select_outputs(
+            const query_matrix_t& queries,
+            const csr_t& select_outputs_csr,
+            prediction_matrix_t& prediction,
+            const char* overridden_post_processor=nullptr,
+            const int threads=-1
+        ) {
+            uint32_t prediction_depth = model_layers.size();
+
+            // Find the sparsity pattern of each layer
+            std::vector<csr_t> select_outputs_csrs(prediction_depth);
+            select_outputs_csrs[0] = select_outputs_csr;
+            
+            for (uint32_t i_layer = 1; i_layer < prediction_depth; ++i_layer) {
+                ISpecializedModelLayer* layer = model_layers[prediction_depth - i_layer];
+                csc_t C = layer->get_C();
+                csr_t csr_C = C.to_csr();
+                csr_t output_csr;
+                smat_x_smat(select_outputs_csrs[i_layer - 1], csr_C, output_csr, false, true, threads);
+                select_outputs_csrs[i_layer] = output_csr;
+                C.free_underlying_memory();
+                csr_C.free_underlying_memory();
+            }
+
+            // Create first layer's prev pred;
+            prediction_matrix_t prev_layer_pred;
+            prev_layer_pred.fill_ones(queries.rows, 1);
+
+            // Run the prediction loop, passing predictions down through layers of the model
+            for (uint32_t i_layer = 0; i_layer < prediction_depth; ++i_layer) {
+                ISpecializedModelLayer* layer = model_layers[i_layer];
+
+                bool is_first_layer = (i_layer == 0);
+                // Find the prediction for one layer
+                prediction_matrix_t curr_layer_pred;
+                layer->predict_select_outputs(
+                    queries,
+                    select_outputs_csrs[prediction_depth - 1 - i_layer],
+                    prev_layer_pred,
+                    is_first_layer,
+                    overridden_post_processor,
+                    curr_layer_pred,
+                    threads
+                );
+                prev_layer_pred.free_underlying_memory();
+                prev_layer_pred = curr_layer_pred;
+            }
+            prediction = prev_layer_pred;
+
+            for (int i = 1; i < prediction_depth; ++i) {
+                select_outputs_csrs[i].free_underlying_memory();
+            }
         }
 
         static void load(

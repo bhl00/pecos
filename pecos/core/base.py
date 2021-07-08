@@ -562,6 +562,32 @@ class corelib(object):
         ]
         corelib.fillprototype(self.clib_float32.c_xlinear_predict_drm_f32, None, arg_list)
 
+        # Interface for sparse select output prediction
+        arg_list = [
+            c_void_p,
+            POINTER(ScipyCsrF32),
+            POINTER(ScipyCsrF32),
+            c_char_p,
+            c_int,
+            ScipyCompressedSparseAllocator.CFUNCTYPE,
+        ]
+        corelib.fillprototype(
+            self.clib_float32.c_xlinear_predict_select_outputs_csr_f32, None, arg_list
+        )
+
+        # Interface for dense select output prediction
+        arg_list = [
+            c_void_p,
+            POINTER(ScipyDrmF32),
+            POINTER(ScipyCsrF32),
+            c_char_p,
+            c_int,
+            ScipyCompressedSparseAllocator.CFUNCTYPE,
+        ]
+        corelib.fillprototype(
+            self.clib_float32.c_xlinear_predict_select_outputs_drm_f32, None, arg_list
+        )
+
         # c interface for loading just model tree directly (no tfidf)
         res_list = c_void_p
         arg_list = [c_char_p]
@@ -721,6 +747,63 @@ class corelib(object):
             overriden_beam_size if overriden_beam_size else 0,
             overriden_post_processor_str.encode("utf-8") if overriden_post_processor_str else None,
             overriden_only_topk if overriden_only_topk else 0,
+            threads,
+            pred_alloc.cfunc,
+        )
+
+    def xlinear_predict_select_outputs(
+        self,
+        c_model,
+        X,
+        select_outputs_csr,
+        overriden_post_processor_str,
+        threads,
+        pred_alloc,
+    ):
+        """
+        Performs a select prediction using the given model and queries.
+
+        Args:
+            c_model (c_pointer): A C pointer to the model to use for prediction. This pointer
+                is returned by the c_load_xlinear_model_from_disk and
+                c_load_xlinear_model_from_disk_ext functions in corelib.clib_float32.
+            X: The query matrix (admissible formats are smat.csr_matrix,
+                np.ndarray, ScipyCsrF32, or ScipyDrmF32). Note that if this is smat.csr_matrix,
+                the matrix must have sorted indices. You can call sort_indices() to ensure this.
+            select_outputs_csr (csr_matrix): the select outputs to predict
+            overriden_post_processor_str (string): Overrides the post processor to use by name. Use
+                None for model defaults.
+            threads (int): Sets the number of threads to use in computation. Use
+                -1 to use the maximum amount of available threads.
+            pred_alloc (ScipyCompressedSparseAllocator): The allocator to store the result in.
+        """
+        clib = self.clib_float32
+
+        if isinstance(X, smat.csr_matrix):
+            if not X.has_sorted_indices:
+                raise ValueError("Query matrix does not have sorted indices!")
+            X = ScipyCsrF32.init_from(X)
+        elif isinstance(X, np.ndarray):
+            X = ScipyDrmF32.init_from(X)
+
+        if not isinstance(select_outputs_csr, smat.csr_matrix):
+            raise ValueError(
+                "type(select_outputs_csr) = {} not implemented".format(type(select_outputs_csr))
+            )
+        select_outputs_csr = ScipyCsrF32.init_from(select_outputs_csr)
+
+        if isinstance(X, ScipyCsrF32):
+            c_predict = clib.c_xlinear_predict_select_outputs_csr_f32
+        elif isinstance(X, ScipyDrmF32):
+            c_predict = clib.c_xlinear_predict_select_outputs_drm_f32
+        else:
+            raise NotImplementedError("type(X) = {} not implemented".format(type(X)))
+
+        c_predict(
+            c_model,
+            byref(X),
+            byref(select_outputs_csr),
+            overriden_post_processor_str.encode("utf-8") if overriden_post_processor_str else None,
             threads,
             pred_alloc.cfunc,
         )
@@ -952,6 +1035,7 @@ class corelib(object):
             "nr_features",
             "nr_labels",
             "nr_codes",
+            "weight_matrix_type",
         }, f"attr {attr} not implemented"
         return self.clib_float32.c_xlinear_get_int_attr(c_model, c_char_p(attr.encode("utf-8")))
 

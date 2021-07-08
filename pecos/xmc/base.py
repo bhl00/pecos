@@ -21,7 +21,14 @@ import dataclasses as dc
 import numpy as np
 import pecos
 import scipy.sparse as smat
-from pecos.core import ScipyCompressedSparseAllocator, ScipyCscF32, ScipyCsrF32, ScipyDrmF32, clib
+from pecos.core import (
+    ScipyCompressedSparseAllocator,
+    ScipyCscF32,
+    ScipyCsrF32,
+    ScipyDrmF32,
+    clib,
+    XLINEAR_INFERENCE_MODEL_TYPES,
+)
 from pecos.utils import smat_util
 from pecos.utils.cluster_util import ClusterChain, hierarchical_kmeans
 from sklearn.preprocessing import normalize
@@ -1107,6 +1114,17 @@ class HierarchicalMLModel(pecos.BaseClass):
         else:
             return self.model_chain[-1].nr_labels
 
+    @property
+    def weight_matrix_type(self):
+        """The type of the weight matrix"""
+        if self.is_predict_only:
+            weight_matrix_value = clib.xlinear_get_int_attr(self.model_chain, "weight_matrix_type")
+            return list(XLINEAR_INFERENCE_MODEL_TYPES.keys())[
+                list(XLINEAR_INFERENCE_MODEL_TYPES.values()).index(weight_matrix_value)
+            ]
+        else:
+            return type(self.model_chain[0].W)
+
     def __add__(self, other):
         if self.is_predict_only:
             raise Exception("Model is predict only! __add__ not supported!")
@@ -1476,7 +1494,7 @@ class HierarchicalMLModel(pecos.BaseClass):
         """Predict on given input data
         Args:
             X (csr_matrix or ndarray): instance feature matrix to predict on
-            select_outputs_csr (csr_matrix): the prediction from pervious matchers (nr_inst, nr_labels).
+            select_outputs_csr (csr_matrix): the select outputs to predict
             pred_params (HierarchicalMLModel.PredParams, optional): instance of HierarchicalMLModel.PredParams.
                 Default None to use the pred_params used in model training.
             kwargs: overriding prediction parameters for backward compatibility
@@ -1488,17 +1506,17 @@ class HierarchicalMLModel(pecos.BaseClass):
             pred_csr (csr_matrix): prediction matrix (nr_inst, nr_labels)
         """
         if X.dtype != np.float32:
-            raise ValueError("X.dtype = {} is not supported").format(X.dtype)
+            raise ValueError("X.dtype = {} is not supported".format(X.dtype))
         if not isinstance(X, smat.csr_matrix) and not (
             isinstance(X, np.ndarray) and X.flags["C_CONTIGUOUS"]
         ):
-            raise ValueError("type(X) = {} is not supported").format(type(X))
+            raise ValueError("type(X) = {} is not supported".format(type(X)))
         if X.shape[1] != self.nr_features:
             raise ValueError("Feature dimension of query matrix does not match weight matrix")
 
         if not isinstance(select_outputs_csr, smat.csr_matrix):
-            raise ValueError("type(select_outputs_csr) = {} is not supported").format(
-                type(select_outputs_csr)
+            raise ValueError(
+                "type(select_outputs_csr) = {} is not supported".format(type(select_outputs_csr))
             )
         if select_outputs_csr.shape[1] != self.nr_labels:
             raise ValueError("Label dimension of select output matrix does not match")
@@ -1519,7 +1537,41 @@ class HierarchicalMLModel(pecos.BaseClass):
         pred_params.override_with_kwargs(kwargs)
 
         if self.is_predict_only:
-            raise NotImplementedError("is_predict_only=True not supported")
+            if self.weight_matrix_type != "CSC":
+                raise NotImplementedError(
+                    "is_predict_only=True not supported for weight_matrix_type = {}".format(
+                        self.weight_matrix_type
+                    )
+                )
+
+            old_chain = self.get_pred_params().model_chain
+            new_chain = pred_params.model_chain
+
+            # check if post_processor is valid (support by C++) after overriding
+            if all(
+                old_p.post_processor == new_p.post_processor
+                for (old_p, new_p) in zip(old_chain, new_chain)
+            ):
+                overridden_post_processor = None
+            elif all(new_chain[0].post_processor == new_p.post_processor for new_p in new_chain):
+                overridden_post_processor = new_chain[0].post_processor
+            else:
+                raise NotImplementedError(
+                    "when is_predict_only=True, post_processor is not supported for overriddng"
+                )
+
+            # Call C++ code
+            pred_alloc = ScipyCompressedSparseAllocator()
+            clib.xlinear_predict_select_outputs(
+                self.model_chain,
+                X,
+                select_outputs_csr,
+                overridden_post_processor,
+                kwargs.get("threads", -1),
+                pred_alloc,
+            )
+
+            return pred_alloc.get()
         else:
             select_outputs_csrs = []
             select_outputs_csrs.insert(0, select_outputs_csr)
