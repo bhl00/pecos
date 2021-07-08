@@ -878,9 +878,7 @@ def test_predict_consistency_between_topk_and_select(tmpdir):
     select_outputs_list.append(set([n for n in range(label_size // 10)]))
     select_outputs_list.append(set([n for n in range(label_size)]))
 
-    for model_folder_local in model_folder_list:
-        model = XLinearModel.load(model_folder_local, is_predict_only=False)
-
+    def test_on_model(model, X, select_outputs_list):
         for pp in PostProcessor.valid_list():
             # Batch mode topk
             py_sparse_topk_pred = model.predict(X, post_processor=pp)
@@ -997,3 +995,12 @@ def test_predict_consistency_between_topk_and_select(tmpdir):
                     assert true_dense_pred.todense() == approx(
                         py_select_dense_pred.todense(), abs=1e-6
                     ), f"model:{model_folder_local} (realtime, dense, select) post_processor:{pp}"
+
+    for model_folder_local in model_folder_list:
+        model_f = XLinearModel.load(model_folder_local, is_predict_only=False)
+        model_t = XLinearModel.load(
+            model_folder_local, is_predict_only=True, weight_matrix_type="CSC"
+        )
+
+        test_on_model(model_f, X, select_outputs_list)
+        test_on_model(model_t, X, select_outputs_list)
