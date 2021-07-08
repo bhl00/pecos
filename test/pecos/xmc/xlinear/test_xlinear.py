@@ -885,12 +885,12 @@ def test_predict_consistency_between_topk_and_select(tmpdir):
             py_dense_topk_pred = model.predict(X.todense(), post_processor=pp)
 
             # Sparse Input
-            py_select_sparse_topk_pred = model.predict_select_outputs(
-                X, py_sparse_topk_pred, post_processor=pp
+            py_select_sparse_topk_pred = model.predict(
+                X, select_outputs_csr=py_sparse_topk_pred, post_processor=pp
             )
             # Dense Input
-            py_select_dense_topk_pred = model.predict_select_outputs(
-                X, py_dense_topk_pred, post_processor=pp
+            py_select_dense_topk_pred = model.predict(
+                X, select_outputs_csr=py_dense_topk_pred, post_processor=pp
             )
 
             assert py_sparse_topk_pred.todense() == approx(
@@ -918,12 +918,12 @@ def test_predict_consistency_between_topk_and_select(tmpdir):
                 true_dense_pred.eliminate_zeros()
 
                 # Sparse Input
-                py_select_sparse_pred = model.predict_select_outputs(
-                    X, true_sparse_pred, post_processor=pp
+                py_select_sparse_pred = model.predict(
+                    X, select_outputs_csr=true_sparse_pred, post_processor=pp
                 )
                 # Dense Input
-                py_select_dense_pred = model.predict_select_outputs(
-                    X.todense(), true_dense_pred, post_processor=pp
+                py_select_dense_pred = model.predict(
+                    X.todense(), select_outputs_csr=true_dense_pred, post_processor=pp
                 )
 
                 assert true_sparse_pred.todense() == approx(
@@ -942,12 +942,12 @@ def test_predict_consistency_between_topk_and_select(tmpdir):
                 py_dense_realtime_pred = model.predict(query_slice.todense(), post_processor=pp)
 
                 # Sparse Input
-                py_select_sparse_realtime_pred = model.predict_select_outputs(
-                    query_slice, py_sparse_realtime_pred, post_processor=pp
+                py_select_sparse_realtime_pred = model.predict(
+                    query_slice, select_outputs_csr=py_sparse_realtime_pred, post_processor=pp
                 )
                 # Dense input
-                py_select_dense_realtime_pred = model.predict_select_outputs(
-                    query_slice, py_dense_realtime_pred, post_processor=pp
+                py_select_dense_realtime_pred = model.predict(
+                    query_slice, select_outputs_csr=py_dense_realtime_pred, post_processor=pp
                 )
 
                 assert py_sparse_realtime_pred.todense() == approx(
@@ -981,12 +981,12 @@ def test_predict_consistency_between_topk_and_select(tmpdir):
                     true_dense_pred.eliminate_zeros()
 
                     # Sparse Input
-                    py_select_sparse_pred = model.predict_select_outputs(
-                        query_slice, true_sparse_pred, post_processor=pp
+                    py_select_sparse_pred = model.predict(
+                        query_slice, select_outputs_csr=true_sparse_pred, post_processor=pp
                     )
                     # Dense Input
-                    py_select_dense_pred = model.predict_select_outputs(
-                        query_slice.todense(), true_dense_pred, post_processor=pp
+                    py_select_dense_pred = model.predict(
+                        query_slice.todense(), select_outputs_csr=true_dense_pred, post_processor=pp
                     )
 
                     assert true_sparse_pred.todense() == approx(

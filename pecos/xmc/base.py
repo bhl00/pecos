@@ -1577,7 +1577,9 @@ class HierarchicalMLModel(pecos.BaseClass):
             select_outputs_csrs.insert(0, select_outputs_csr)
             for d in range(self.depth - 2, -1, -1):
                 prev_csr = clib.sparse_matmul(
-                    select_outputs_csrs[0], self.model_chain[d + 1].C
+                    select_outputs_csrs[0],
+                    self.model_chain[d + 1].C,
+                    threads=kwargs.get("threads", -1),
                 ).tocsr()
                 select_outputs_csrs.insert(0, prev_csr)
 

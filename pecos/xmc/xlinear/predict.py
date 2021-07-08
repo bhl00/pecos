@@ -133,11 +133,9 @@ def do_predict(args):
         if args.batch_size is not None:
             Yts = []
             for i in range(0, Xt.shape[0], args.batch_size):
-                Yte = xlinear_model.predict_select_outputs(
+                Yte = xlinear_model.predict(
                     Xt[i : i + args.batch_size, :],
-                    Y_select[i : i + args.batch_size, :],
-                    only_topk=args.only_topk,
-                    beam_size=args.beam_size,
+                    select_outputs_csr=Y_select[i : i + args.batch_size, :],
                     post_processor=args.post_processor,
                     threads=args.threads,
                 )
@@ -145,11 +143,9 @@ def do_predict(args):
             # vstack_csr will retain indices order
             Yt_pred = smat_util.vstack_csr(Yts)
         else:
-            Yt_pred = xlinear_model.predict_select_outputs(
+            Yt_pred = xlinear_model.predict(
                 Xt,
-                Y_select,
-                only_topk=args.only_topk,
-                beam_size=args.beam_size,
+                select_outputs_csr=Y_select,
                 post_processor=args.post_processor,
                 threads=args.threads,
             )

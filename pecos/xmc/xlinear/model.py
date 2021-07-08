@@ -359,6 +359,7 @@ class XLinearModel(pecos.BaseClass):
         self,
         X,
         pred_params=None,
+        select_outputs_csr=None,
         **kwargs,
     ):
         """Predict on given input data
@@ -366,6 +367,7 @@ class XLinearModel(pecos.BaseClass):
         Args:
             X (csr_matrix(float32) or ndarray(float32)): instance feature matrix to predict on
             pred_params (XLinearModel.PredParams, optional): instance of XLinearModel.PredParams
+            select_outputs_csr (csr_matrix, optional): instance label matrix to predict from
             kwargs:
                 beam_size (int, optional): override the beam size specified in the model.
                     Default None to disable overriding
@@ -379,43 +381,22 @@ class XLinearModel(pecos.BaseClass):
         Returns:
             Y_pred (csr_matrix): prediction matrix
         """
-        if pred_params is None:
-            Y_pred = self.model.predict(X, pred_params=None, **kwargs)
-        elif isinstance(pred_params, self.PredParams):
-            Y_pred = self.model.predict(X, pred_params=pred_params.hlm_args, **kwargs)
+        if select_outputs_csr is None:
+            if pred_params is None:
+                Y_pred = self.model.predict(X, pred_params=None, **kwargs)
+            elif isinstance(pred_params, self.PredParams):
+                Y_pred = self.model.predict(X, pred_params=pred_params.hlm_args, **kwargs)
+            else:
+                raise TypeError("type(pred_kwargs) is not supported")
         else:
-            raise TypeError("type(pred_kwargs) is not supported")
-        return Y_pred
-
-    # TODO: combine
-    def predict_select_outputs(
-        self,
-        X,
-        select_outputs_csr,
-        pred_params=None,
-        **kwargs,
-    ):
-        """Predict select outputs on given input data
-        Args:
-            X (csr_matrix(float32) or ndarray(float32)): instance feature matrix to predict on
-            select_outputs_csr (csr_matrix): instance label matrix to predict from
-            pred_params (XLinearModel.PredParams, optional): instance of XLinearModel.PredParams
-            kwargs:
-                post_processor (str, optional):  override the post_processor specified in the model
-                    Default None to disable overriding
-                threads (int, optional): the number of threads to use for training.
-                    Defaults to -1 to use all
-        Returns:
-            Y_pred (csr_matrix): prediction matrix
-        """
-        if pred_params is None:
-            Y_pred = self.model.predict_select_outputs(
-                X, select_outputs_csr, pred_params=None, **kwargs
-            )
-        elif isinstance(pred_params, self.PredParams):
-            Y_pred = self.model.predict_select_outputs(
-                X, select_outputs_csr, pred_params=pred_params.hlm_args, **kwargs
-            )
-        else:
-            raise TypeError("type(pred_kwargs) is not supported")
+            if pred_params is None:
+                Y_pred = self.model.predict_select_outputs(
+                    X, select_outputs_csr, pred_params=None, **kwargs
+                )
+            elif isinstance(pred_params, self.PredParams):
+                Y_pred = self.model.predict_select_outputs(
+                    X, select_outputs_csr, pred_params=pred_params.hlm_args, **kwargs
+                )
+            else:
+                raise TypeError("type(pred_kwargs) is not supported")
         return Y_pred
